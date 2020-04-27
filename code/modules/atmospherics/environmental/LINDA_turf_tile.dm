@@ -1,8 +1,3 @@
-#define MINIMUM_HEAT_CAPACITY	0.0003
-#define MINIMUM_MOLE_COUNT		0.01
-#define MOLAR_ACCURACY  1E-7
-#define QUANTIZE(variable) (round((variable), (MOLAR_ACCURACY)))
-
 /turf
 	//used for temperature calculations
 	var/thermal_conductivity = 0.05
@@ -28,7 +23,6 @@
 	//used for spacewind
 	var/pressure_difference = 0
 	var/pressure_direction = 0
-	var/downflow_deltas = list()
 
 	var/datum/excited_group/excited_group
 	var/excited = FALSE
@@ -101,8 +95,6 @@
 	air.archive()
 	archived_cycle = SSair.times_fired
 	temperature_archived = temperature
-	for(var/id in downflow_deltas)
-		downflow_deltas[id] = 1
 
 /////////////////////////GAS OVERLAYS//////////////////////////////
 
@@ -166,8 +158,6 @@
 /turf/proc/process_cell(fire_count)
 	SSair.remove_from_active(src)
 
-
-
 /turf/open/process_cell(fire_count)
 	if(archived_cycle < fire_count) //archive self if not already done
 		archive()
@@ -177,29 +167,28 @@
 	//cache for sanic speed
 	var/list/adjacent_turfs = atmos_adjacent_turfs
 	var/datum/excited_group/our_excited_group = excited_group
+	var/adjacent_turfs_length = LAZYLEN(adjacent_turfs)
 	var/cached_atmos_cooldown = atmos_cooldown + 1
 
 	var/planet_atmos = planetary_atmos
+	if (planet_atmos)
+		adjacent_turfs_length++
 
 	var/datum/gas_mixture/our_air = air
-	var/list/local_gases = air.gases
-	
-	//compute per pair deltas and decays
+
 	for(var/t in adjacent_turfs)
 		var/turf/open/enemy_tile = t
-		var/list/local_deltas = adjacent_turfs[t]
 
-		if(fire_count > enemy_tile.current_cycle)
-			enemy_tile.archive()
-		if(local_deltas.len)
+		if(fire_count <= enemy_tile.current_cycle)
 			continue
+		enemy_tile.archive()
 
+	/******************* GROUP HANDLING START *****************************************************************/
+
+		var/should_share_air = FALSE
 		var/datum/gas_mixture/enemy_air = enemy_tile.air
-		var/list/enemy_gases = enemy_air.gases
-		var/list/enemy_deltas = null
-		if(enemy_tile.atmos_adjacent_turfs && enemy_tile.atmos_adjacent_turfs[src])
-			enemy_deltas = enemy_tile.atmos_adjacent_turfs[src]
 
+		//cache for sanic speed
 		var/datum/excited_group/enemy_excited_group = enemy_tile.excited_group
 
 		if(our_excited_group && enemy_excited_group)
@@ -207,6 +196,7 @@
 				//combine groups (this also handles updating the excited_group var of all involved turfs)
 				our_excited_group.merge_groups(enemy_excited_group)
 				our_excited_group = excited_group //update our cache
+			should_share_air = TRUE
 
 		else if(our_air.compare(enemy_air))
 			if(!enemy_tile.excited)
@@ -217,161 +207,32 @@
 			if(!enemy_excited_group)
 				EG.add_turf(enemy_tile)
 			our_excited_group = excited_group
-		else
-			continue
+			should_share_air = TRUE
 
-		//compute deltas
-		for(var/id in local_gases | enemy_gases)
-			ASSERT_GAS(id, our_air)
-			ASSERT_GAS(id, enemy_air)
-			local_deltas[id] = GLOB.gaslist_cache[id].Copy()
-			if(enemy_deltas)
-				enemy_deltas[id] = GLOB.gaslist_cache[id].Copy()
+		//air sharing
+		if(should_share_air)
+			var/difference = our_air.share(enemy_air, adjacent_turfs_length)
+			if(difference)
+				if(difference > 0)
+					consider_pressure_difference(enemy_tile, difference)
+				else
+					enemy_tile.consider_pressure_difference(src, -difference)
+			LAST_SHARE_CHECK
 
-			if(!downflow_deltas[id]) downflow_deltas[id] = 1
-			if(!enemy_tile.downflow_deltas[id]) enemy_tile.downflow_deltas[id] = 1
 
-			var/local_gas = local_gases[id]
-			var/enemy_gas = enemy_gases[id]
-			var/local_delta = local_deltas[id]
+	/******************* GROUP HANDLING FINISH *********************************************************************/
 
-			var/delta = QUANTIZE(local_gas[ARCHIVE] - enemy_gas[ARCHIVE])
-			local_delta[MOLES] = delta
-			if(enemy_deltas)
-				enemy_deltas[id][MOLES] = -delta
-
-			if(delta > 0)
-				downflow_deltas[id]++
-			else
-				enemy_tile.downflow_deltas[id]++
-	
-	//compute and apply planet deltas in one go
-	if(planet_atmos)
+	if (planet_atmos) //share our air with the "atmosphere" "above" the turf
 		var/datum/gas_mixture/G = new
 		G.copy_from_turf(src)
 		G.archive()
-
 		if(our_air.compare(G))
 			if(!our_excited_group)
 				var/datum/excited_group/EG = new
 				EG.add_turf(src)
 				our_excited_group = excited_group
-
-			var/heat_capacity_self_to_sharer = 0
-			var/heat_capacity_sharer_to_self = 0
-			var/moved_moles = 0
-			var/abs_moved_moles = 0
-			var/old_self_heat_capacity = our_air.heat_capacity()
-			
-			for(var/id in G.gases)
-				ASSERT_GAS(id, our_air)
-				if(!downflow_deltas[id]) downflow_deltas[id] = 1
-
-				var/local_gas = local_gases[id]
-				var/enemy_gas = G.gases[id]
-
-				var/delta = QUANTIZE(local_gas[ARCHIVE] - enemy_gas[ARCHIVE])
-				var/given = delta / 2
-
-				if(delta > 0) 
-					downflow_deltas[id]++
-					given = delta / downflow_deltas[id]
-					var/gas_heat_capacity = given * local_gas[GAS_META][META_GAS_SPECIFIC_HEAT]
-					heat_capacity_self_to_sharer += gas_heat_capacity
-
-				else
-					var/gas_heat_capacity = given * local_gas[GAS_META][META_GAS_SPECIFIC_HEAT]
-					heat_capacity_sharer_to_self -= gas_heat_capacity
-
-				local_gas[MOLES]	-= given
-				moved_moles				+= given
-				abs_moved_moles		+= abs(given)
-
-
-			for(var/id in local_gases - G.gases)
-				downflow_deltas[id]++
-
-				var/local_gas = local_gases[id]
-				var/delta = QUANTIZE(local_gas[ARCHIVE])
-
-				var/given = delta / downflow_deltas[id]
-				var/gas_heat_capacity = given * local_gas[GAS_META][META_GAS_SPECIFIC_HEAT]
-				heat_capacity_self_to_sharer += gas_heat_capacity
-
-				local_gas[MOLES]	-= given
-				moved_moles				+= given
-				abs_moved_moles		+= abs(given)
-			
-			var/new_self_heat_capacity = old_self_heat_capacity + heat_capacity_sharer_to_self - heat_capacity_self_to_sharer
-			our_air.temperature = (old_self_heat_capacity*our_air.temperature - heat_capacity_self_to_sharer*our_air.temperature_archived + heat_capacity_sharer_to_self*G.temperature_archived)/new_self_heat_capacity
-			
-			our_air.last_share = abs_moved_moles
+			our_air.share(G, adjacent_turfs_length)
 			LAST_SHARE_CHECK
-
-	if(our_excited_group)
-		for(var/t in adjacent_turfs)
-			var/turf/open/enemy_tile = t
-
-			var/datum/excited_group/enemy_excited_group = enemy_tile.excited_group
-
-			if(enemy_excited_group == null)
-				continue
-
-			var/list/local_deltas = adjacent_turfs[t]
-
-			//apply deltas
-			var/datum/gas_mixture/enemy_air = enemy_tile.air
-			var/list/enemy_gases = enemy_air.gases
-
-			var/heat_capacity_self_to_sharer = 0
-			var/moved_moles = 0
-			var/abs_moved_moles = 0
-
-			var/temperature_delta = our_air.temperature_archived - enemy_air.temperature_archived
-			var/abs_temperature_delta = abs(temperature_delta)
-
-			var/old_self_heat_capacity = 0
-			var/old_sharer_heat_capacity = 0
-			if(abs_temperature_delta > MINIMUM_TEMPERATURE_DELTA_TO_CONSIDER)
-				old_self_heat_capacity = our_air.heat_capacity()
-				old_sharer_heat_capacity = enemy_air.heat_capacity()
-
-			for(var/id in local_deltas)
-				var/local_delta = local_deltas[id]
-				if(local_delta[MOLES] <= 0) continue
-
-				ASSERT_GAS(id, enemy_air)
-
-				var/local_gas = local_gases[id]
-				var/enemy_gas = enemy_gases[id]
-				
-				var/given = local_delta[MOLES] / downflow_deltas[id]
-				if(abs_temperature_delta > MINIMUM_TEMPERATURE_DELTA_TO_CONSIDER)
-					var/gas_heat_capacity = given * local_gas[GAS_META][META_GAS_SPECIFIC_HEAT]
-					heat_capacity_self_to_sharer += gas_heat_capacity
-
-				local_gas[MOLES]	-= given
-				enemy_gas[MOLES]	+= given
-				moved_moles				+= given
-				abs_moved_moles		+= abs(given)
-
-			if(abs_temperature_delta > MINIMUM_TEMPERATURE_DELTA_TO_CONSIDER)
-				var/new_self_heat_capacity = old_self_heat_capacity - heat_capacity_self_to_sharer
-				var/new_sharer_heat_capacity = old_sharer_heat_capacity + heat_capacity_self_to_sharer
-				if(new_self_heat_capacity > MINIMUM_HEAT_CAPACITY)
-					our_air.temperature = (old_self_heat_capacity*our_air.temperature - heat_capacity_self_to_sharer*our_air.temperature_archived)/new_self_heat_capacity
-				if(new_sharer_heat_capacity > MINIMUM_HEAT_CAPACITY)
-					enemy_air.temperature = (old_sharer_heat_capacity*enemy_air.temperature + heat_capacity_self_to_sharer*our_air.temperature_archived)/new_sharer_heat_capacity
-				if(abs(old_sharer_heat_capacity) > MINIMUM_HEAT_CAPACITY)
-					if(abs(new_sharer_heat_capacity/old_sharer_heat_capacity - 1) < 0.1) // <10% change in sharer heat capacity
-						our_air.temperature_share(enemy_air, OPEN_HEAT_TRANSFER_COEFFICIENT)
-
-			our_air.last_share = abs_moved_moles
-			enemy_air.garbage_collect()
-			local_deltas.Cut()
-			LAST_SHARE_CHECK
-
-	our_air.garbage_collect()
 
 	our_air.react(src)
 
