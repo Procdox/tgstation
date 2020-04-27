@@ -118,8 +118,8 @@
 	LAZYINITLIST(atmos_destination.atmos_adjacent_turfs)
 	if(atmos_source.atmos_adjacent_turfs[atmos_destination] || atmos_destination.atmos_adjacent_turfs[atmos_source])	//Already linked!
 		return FALSE
-	atmos_source.atmos_adjacent_turfs[atmos_destination] = TRUE
-	atmos_destination.atmos_adjacent_turfs[atmos_source] = TRUE
+	atmos_source.atmos_adjacent_turfs[atmos_destination] = list()
+	atmos_destination.atmos_adjacent_turfs[atmos_source] = list()
 	atmos_source.air_update_turf(FALSE)
 	atmos_destination.air_update_turf(FALSE)
 
