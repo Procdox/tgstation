@@ -145,16 +145,6 @@
 
 /////////////////////////////SIMULATION///////////////////////////////////
 
-#define LAST_SHARE_CHECK \
-	var/last_share = our_air.last_share;\
-	if(last_share > MINIMUM_AIR_TO_SUSPEND){\
-		our_excited_group.reset_cooldowns();\
-		cached_atmos_cooldown = 0;\
-	} else if(last_share > MINIMUM_MOLES_DELTA_TO_MOVE) {\
-		our_excited_group.dismantle_cooldown = 0;\
-		cached_atmos_cooldown = 0;\
-	}
-
 /turf/proc/process_cell(fire_count)
 	SSair.remove_from_active(src)
 
@@ -175,6 +165,8 @@
 		adjacent_turfs_length++
 
 	var/datum/gas_mixture/our_air = air
+
+	var/shared = 0
 
 	for(var/t in adjacent_turfs)
 		var/turf/open/enemy_tile = t
@@ -198,6 +190,9 @@
 				our_excited_group = excited_group //update our cache
 			should_share_air = TRUE
 
+			if(our_air.compare(enemy_air))
+				shared = 1
+
 		else if(our_air.compare(enemy_air))
 			if(!enemy_tile.excited)
 				SSair.add_to_active(enemy_tile)
@@ -209,6 +204,8 @@
 			our_excited_group = excited_group
 			should_share_air = TRUE
 
+			shared = 1
+
 		//air sharing
 		if(should_share_air)
 			var/difference = our_air.share(enemy_air, adjacent_turfs_length)
@@ -217,7 +214,16 @@
 					consider_pressure_difference(enemy_tile, difference)
 				else
 					enemy_tile.consider_pressure_difference(src, -difference)
-			LAST_SHARE_CHECK
+
+			var/last_share = our_air.last_share;
+			if(last_share > MINIMUM_AIR_TO_SUSPEND){
+				our_excited_group.reset_cooldowns();
+				cached_atmos_cooldown = 0;
+			} 
+			else if(last_share > MINIMUM_MOLES_DELTA_TO_MOVE) {
+				our_excited_group.dismantle_cooldown = 0;
+				cached_atmos_cooldown = 0;
+			}
 
 
 	/******************* GROUP HANDLING FINISH *********************************************************************/
@@ -232,9 +238,27 @@
 				EG.add_turf(src)
 				our_excited_group = excited_group
 			our_air.share(G, adjacent_turfs_length)
-			LAST_SHARE_CHECK
+			
+			var/last_share = our_air.last_share;
+			if(last_share > MINIMUM_AIR_TO_SUSPEND){
+				our_excited_group.reset_cooldowns();
+				cached_atmos_cooldown = 0;
+			} 
+			else if(last_share > MINIMUM_MOLES_DELTA_TO_MOVE) {
+				our_excited_group.dismantle_cooldown = 0;
+				cached_atmos_cooldown = 0;
+			}
+
+			shared = 1
 
 	our_air.react(src)
+
+	if(SSair.vis_activity)
+		if(shared)
+			src.add_atom_colour("#ffff00", TEMPORARY_COLOUR_PRIORITY)
+		else
+			src.add_atom_colour("#00ff00", TEMPORARY_COLOUR_PRIORITY)
+		
 
 	update_visuals()
 
@@ -347,6 +371,8 @@
 		T.excited = FALSE
 		T.excited_group = null
 		SSair.active_turfs -= T
+		if(SSair.vis_activity)
+			T.clear_atom_colour(TEMPORARY_COLOUR_PRIORITY)
 	garbage_collect()
 
 /datum/excited_group/proc/garbage_collect()

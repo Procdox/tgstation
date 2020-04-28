@@ -814,6 +814,24 @@ But you can call procs that are of type /mob/living/carbon/human/proc/ for that 
 	SSblackbox.record_feedback("tally", "admin_verb", 1, "Toggle Medal Disable") // If...
 	log_admin("[key_name(src)] [SSachievements.achievements_enabled ? "disabled" : "enabled"] the medal hub lockout.")
 
+/client/proc/toggle_atmo_vis()
+	set category = "Debug"
+	set name = "Toggle Atmo Vis"
+	set desc = "Toggles a visualization of the atmospheric turf activity."
+
+	if(!check_rights(R_DEBUG))
+		return
+
+	SSair.vis_activity = !SSair.vis_activity
+	
+	for(var/t in SSair.active_turfs)
+		var/turf/open/T = t
+		T.clear_atom_colour(TEMPORARY_COLOUR_PRIORITY)
+
+	message_admins("<span class='adminnotice'>[key_name_admin(src)] [SSair.vis_activity ? "disabled" : "enabled"] the atmo visualization.</span>")
+	SSblackbox.record_feedback("tally", "admin_verb", 1, "Toggle Atmo Vis") // If...
+	log_admin("[key_name(src)] [SSair.vis_activity ? "disabled" : "enabled"] the atmo visualization.")
+
 /client/proc/view_runtimes()
 	set category = "Debug"
 	set name = "View Runtimes"

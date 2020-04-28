@@ -5,6 +5,7 @@ SUBSYSTEM_DEF(air)
 	wait = 5
 	flags = SS_BACKGROUND
 	runlevels = RUNLEVEL_GAME | RUNLEVEL_POSTGAME
+	var/vis_activity = FALSE
 
 	var/cost_turfs = 0
 	var/cost_groups = 0
@@ -237,9 +238,8 @@ SUBSYSTEM_DEF(air)
 	active_turfs -= T
 	if(currentpart == SSAIR_ACTIVETURFS)
 		currentrun -= T
-	#ifdef VISUALIZE_ACTIVE_TURFS
-	T.remove_atom_colour(TEMPORARY_COLOUR_PRIORITY, "#00ff00")
-	#endif
+	if(SSair.vis_activity)
+		T.clear_atom_colour(TEMPORARY_COLOUR_PRIORITY)
 	if(istype(T))
 		T.excited = 0
 		if(T.excited_group)
@@ -247,9 +247,8 @@ SUBSYSTEM_DEF(air)
 
 /datum/controller/subsystem/air/proc/add_to_active(turf/open/T, blockchanges = 1)
 	if(istype(T) && T.air)
-		#ifdef VISUALIZE_ACTIVE_TURFS
-		T.add_atom_colour("#00ff00", TEMPORARY_COLOUR_PRIORITY)
-		#endif
+		if(SSair.vis_activity)
+			T.add_atom_colour("#00ff00", TEMPORARY_COLOUR_PRIORITY)
 		T.excited = 1
 		active_turfs |= T
 		if(currentpart == SSAIR_ACTIVETURFS)
