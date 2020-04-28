@@ -29,7 +29,8 @@
 	var/datum/gas_mixture/turf/air
 
 	var/obj/effect/hotspot/active_hotspot
-	var/atmos_cooldown  = 0
+	var/shared_this_tick = 0
+	var/cooldown = 0
 	var/planetary_atmos = FALSE //air will revert to initial_gas_mix over time
 
 	var/list/atmos_overlay_types //gas IDs of current active gas overlays
@@ -158,15 +159,12 @@
 	var/list/adjacent_turfs = atmos_adjacent_turfs
 	var/datum/excited_group/our_excited_group = excited_group
 	var/adjacent_turfs_length = LAZYLEN(adjacent_turfs)
-	var/cached_atmos_cooldown = atmos_cooldown + 1
 
 	var/planet_atmos = planetary_atmos
 	if (planet_atmos)
 		adjacent_turfs_length++
 
 	var/datum/gas_mixture/our_air = air
-
-	var/shared = 0
 
 	for(var/t in adjacent_turfs)
 		var/turf/open/enemy_tile = t
@@ -190,9 +188,6 @@
 				our_excited_group = excited_group //update our cache
 			should_share_air = TRUE
 
-			if(our_air.compare(enemy_air))
-				shared = 1
-
 		else if(our_air.compare(enemy_air))
 			if(!enemy_tile.excited)
 				SSair.add_to_active(enemy_tile)
@@ -204,8 +199,6 @@
 			our_excited_group = excited_group
 			should_share_air = TRUE
 
-			shared = 1
-
 		//air sharing
 		if(should_share_air)
 			var/difference = our_air.share(enemy_air, adjacent_turfs_length)
@@ -216,13 +209,19 @@
 					enemy_tile.consider_pressure_difference(src, -difference)
 
 			var/last_share = our_air.last_share;
-			if(last_share > MINIMUM_AIR_TO_SUSPEND){
+			if(last_share > MINIMUM_MOLES_DELTA_TO_MOVE) {
+				if(!enemy_tile.excited) //re excite this turf if it came to rest in a group
+					enemy_tile.excited = TRUE
+					SSair.add_to_active(enemy_tile)
+					
 				our_excited_group.reset_cooldowns();
-				cached_atmos_cooldown = 0;
-			} 
-			else if(last_share > MINIMUM_MOLES_DELTA_TO_MOVE) {
-				our_excited_group.dismantle_cooldown = 0;
-				cached_atmos_cooldown = 0;
+
+				if(last_share > MINIMUM_AIR_TO_SUSPEND)
+					enemy_tile.shared_this_tick = 2;
+					shared_this_tick = 2;
+				else
+					enemy_tile.shared_this_tick = 1;
+					shared_this_tick = 1;
 			}
 
 
@@ -242,31 +241,41 @@
 			var/last_share = our_air.last_share;
 			if(last_share > MINIMUM_AIR_TO_SUSPEND){
 				our_excited_group.reset_cooldowns();
-				cached_atmos_cooldown = 0;
+				shared_this_tick = 2;
 			} 
 			else if(last_share > MINIMUM_MOLES_DELTA_TO_MOVE) {
-				our_excited_group.dismantle_cooldown = 0;
-				cached_atmos_cooldown = 0;
+				our_excited_group.reset_cooldowns();
+				shared_this_tick = 1;
 			}
-
-			shared = 1
 
 	our_air.react(src)
 
 	if(SSair.vis_activity)
-		if(shared)
-			src.add_atom_colour("#ffff00", TEMPORARY_COLOUR_PRIORITY)
+		if(shared_this_tick > 0)
+			cooldown = 0
+			if(shared_this_tick == 2)
+				src.add_atom_colour("#ff0000", TEMPORARY_COLOUR_PRIORITY)
+			else
+				src.add_atom_colour("#ffff00", TEMPORARY_COLOUR_PRIORITY)
 		else
-			src.add_atom_colour("#00ff00", TEMPORARY_COLOUR_PRIORITY)
+			cooldown++
+			if(cooldown < 10)
+				src.add_atom_colour("#00ff00", TEMPORARY_COLOUR_PRIORITY)
+			else
+				src.add_atom_colour("#0000ff", TEMPORARY_COLOUR_PRIORITY)
+				SSair.active_turfs -= src
+				excited = FALSE
 		
 
 	update_visuals()
 
-	if((!our_excited_group && !(our_air.temperature > MINIMUM_TEMPERATURE_START_SUPERCONDUCTION && consider_superconductivity(starting = TRUE))) \
-	|| (cached_atmos_cooldown > (EXCITED_GROUP_DISMANTLE_CYCLES * 2)))
+	//this was a dirty cleanup duct tape solution for turfs that didn't have their cooldown/excited unset correctly on group destruction
+	//now it just cleans up single turfs that didn't share at all (like if they were effected by a breathe, but not enough to create a difference)
+	if(!our_excited_group && !(our_air.temperature > MINIMUM_TEMPERATURE_START_SUPERCONDUCTION && consider_superconductivity(starting = TRUE)))
 		SSair.remove_from_active(src)
+		src.clear_atom_colour(TEMPORARY_COLOUR_PRIORITY)
 
-	atmos_cooldown = cached_atmos_cooldown
+	shared_this_tick = 0
 
 //////////////////////////SPACEWIND/////////////////////////////
 
@@ -303,7 +312,6 @@
 
 /datum/excited_group
 	var/list/turf_list = list()
-	var/breakdown_cooldown = 0
 	var/dismantle_cooldown = 0
 
 /datum/excited_group/New()
@@ -331,7 +339,6 @@
 		E.reset_cooldowns()
 
 /datum/excited_group/proc/reset_cooldowns()
-	breakdown_cooldown = 0
 	dismantle_cooldown = 0
 
 //argument is so world start can clear out any turf differences quickly.
@@ -360,10 +367,7 @@
 	for(var/t in turf_list)
 		var/turf/open/T = t
 		T.air.copy_from(A)
-		T.atmos_cooldown = 0
 		T.update_visuals()
-
-	breakdown_cooldown = 0
 
 /datum/excited_group/proc/dismantle()
 	for(var/t in turf_list)
@@ -373,12 +377,6 @@
 		SSair.active_turfs -= T
 		if(SSair.vis_activity)
 			T.clear_atom_colour(TEMPORARY_COLOUR_PRIORITY)
-	garbage_collect()
-
-/datum/excited_group/proc/garbage_collect()
-	for(var/t in turf_list)
-		var/turf/open/T = t
-		T.excited_group = null
 	turf_list.Cut()
 	SSair.excited_groups -= src
 

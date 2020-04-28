@@ -224,11 +224,8 @@ SUBSYSTEM_DEF(air)
 	while(currentrun.len)
 		var/datum/excited_group/EG = currentrun[currentrun.len]
 		currentrun.len--
-		EG.breakdown_cooldown++
 		EG.dismantle_cooldown++
-		if(EG.breakdown_cooldown >= EXCITED_GROUP_BREAKDOWN_CYCLES)
-			EG.self_breakdown()
-		else if(EG.dismantle_cooldown >= EXCITED_GROUP_DISMANTLE_CYCLES)
+		if(EG.dismantle_cooldown >= EXCITED_GROUP_DISMANTLE_CYCLES)
 			EG.dismantle()
 		if (MC_TICK_CHECK)
 			return
@@ -238,23 +235,18 @@ SUBSYSTEM_DEF(air)
 	active_turfs -= T
 	if(currentpart == SSAIR_ACTIVETURFS)
 		currentrun -= T
-	if(SSair.vis_activity)
-		T.clear_atom_colour(TEMPORARY_COLOUR_PRIORITY)
 	if(istype(T))
 		T.excited = 0
 		if(T.excited_group)
-			T.excited_group.garbage_collect()
+			T.excited_group.dismantle()
 
 /datum/controller/subsystem/air/proc/add_to_active(turf/open/T, blockchanges = 1)
 	if(istype(T) && T.air)
-		if(SSair.vis_activity)
-			T.add_atom_colour("#00ff00", TEMPORARY_COLOUR_PRIORITY)
 		T.excited = 1
 		active_turfs |= T
-		if(currentpart == SSAIR_ACTIVETURFS)
-			currentrun |= T
+		//remove currentrun addition, which had potential to run huge numbers of atmo steps in a single run, which didn't make sense from a performance or behavior view
 		if(blockchanges && T.excited_group)
-			T.excited_group.garbage_collect()
+			T.excited_group.dismantle()
 	else if(T.flags_1 & INITIALIZED_1)
 		for(var/turf/S in T.atmos_adjacent_turfs)
 			add_to_active(S)
