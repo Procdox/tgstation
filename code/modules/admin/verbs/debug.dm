@@ -828,9 +828,9 @@ But you can call procs that are of type /mob/living/carbon/human/proc/ for that 
 		var/turf/open/T = t
 		T.clear_atom_colour(TEMPORARY_COLOUR_PRIORITY)
 
-	message_admins("<span class='adminnotice'>[key_name_admin(src)] [SSair.vis_activity ? "disabled" : "enabled"] the atmo visualization.</span>")
+	message_admins("<span class='adminnotice'>[key_name_admin(src)] [SSair.vis_activity ? "enabled" : "disabled"] the atmo visualization.</span>")
 	SSblackbox.record_feedback("tally", "admin_verb", 1, "Toggle Atmo Vis") // If...
-	log_admin("[key_name(src)] [SSair.vis_activity ? "disabled" : "enabled"] the atmo visualization.")
+	log_admin("[key_name(src)] [SSair.vis_activity ? "enabled" : "disabled"] the atmo visualization.")
 
 /client/proc/view_runtimes()
 	set category = "Debug"
