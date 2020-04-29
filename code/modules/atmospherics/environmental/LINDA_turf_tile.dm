@@ -166,8 +166,11 @@
 
 	var/datum/gas_mixture/our_air = air
 
+#ifdef ASSERT_ACTIVE_TURFS
 	if(our_excited_group)
 		ASSERT(src in our_excited_group.turf_list)
+		our_excited_group.validate()
+#endif
 
 	for(var/t in adjacent_turfs)
 		var/turf/open/enemy_tile = t
@@ -184,23 +187,17 @@
 		//cache for sanic speed
 		var/datum/excited_group/enemy_excited_group = enemy_tile.excited_group
 
-		if(our_excited_group)
-			ASSERT(src in our_excited_group.turf_list)
-
 		if(our_excited_group && enemy_excited_group)
 			if(our_excited_group != enemy_excited_group)
 				//combine groups (this also handles updating the excited_group var of all involved turfs)
 				our_excited_group.merge_groups(enemy_excited_group)
-
-				ASSERT(excited_group)
-				ASSERT(src in excited_group.turf_list)
-				ASSERT(enemy_tile in excited_group.turf_list)
-
 				our_excited_group = excited_group //update our cache
-
+#ifdef ASSERT_ACTIVE_TURFS
 				ASSERT(our_excited_group)
 				ASSERT(src in our_excited_group.turf_list)
 				ASSERT(enemy_tile in our_excited_group.turf_list)
+				our_excited_group.validate()
+#endif
 			should_share_air = TRUE
 
 			
@@ -213,17 +210,13 @@
 				EG.add_turf(src)
 			if(!enemy_excited_group)
 				EG.add_turf(enemy_tile)
-
-			ASSERT(excited_group)
-			ASSERT(src in excited_group.turf_list)
-			ASSERT(enemy_tile in excited_group.turf_list)
-				
 			our_excited_group = excited_group
-
+#ifdef ASSERT_ACTIVE_TURFS
 			ASSERT(our_excited_group)
 			ASSERT(src in our_excited_group.turf_list)
 			ASSERT(enemy_tile in our_excited_group.turf_list)
-			should_share_air = TRUE
+			our_excited_group.validate()
+#endif
 
 		//air sharing
 		if(should_share_air)
@@ -246,9 +239,11 @@
 					enemy_tile.shared_this_tick = 1;
 					shared_this_tick = 1;
 
+#ifdef ASSERT_ACTIVE_TURFS
 		if(our_excited_group)
 			ASSERT(src in our_excited_group.turf_list)
-
+			our_excited_group.validate()
+#endif
 	/******************* GROUP HANDLING FINISH *********************************************************************/
 
 	if (planet_atmos) //share our air with the "atmosphere" "above" the turf
@@ -259,14 +254,7 @@
 			if(!our_excited_group)
 				var/datum/excited_group/EG = new
 				EG.add_turf(src)
-
-				ASSERT(excited_group)
-				ASSERT(src in excited_group.turf_list)
-
 				our_excited_group = excited_group
-
-				ASSERT(our_excited_group)
-				ASSERT(src in our_excited_group.turf_list)
 			our_air.share(G, adjacent_turfs_length)
 			
 			var/last_share = our_air.last_share;
@@ -281,20 +269,25 @@
 
 	our_air.react(src)
 
+
+	if(shared_this_tick > 0)
+		cooldown = 0
+	else if(cooldown++ >= 10)
+		SSair.remove_from_active(src)
+	
+#ifdef VISUALIZE_ACTIVE_TURFS
 	if(SSair.vis_activity)
 		if(shared_this_tick > 0)
-			cooldown = 0
 			if(shared_this_tick == 2)
 				src.add_atom_colour("#ff0000", TEMPORARY_COLOUR_PRIORITY)
 			else
 				src.add_atom_colour("#ffff00", TEMPORARY_COLOUR_PRIORITY)
 		else
-			cooldown++
 			if(cooldown < 10)
 				src.add_atom_colour("#00ff00", TEMPORARY_COLOUR_PRIORITY)
 			else
 				src.add_atom_colour("#0000ff", TEMPORARY_COLOUR_PRIORITY)
-				SSair.remove_from_active(src)
+#endif
 		
 
 	update_visuals()
@@ -303,7 +296,10 @@
 	//now it just cleans up single turfs that didn't share at all (like if they were effected by a breathe, but not enough to create a difference)
 	if(!our_excited_group && !(our_air.temperature > MINIMUM_TEMPERATURE_START_SUPERCONDUCTION && consider_superconductivity(starting = TRUE)))
 		SSair.invalidate(src)
-		src.clear_atom_colour(TEMPORARY_COLOUR_PRIORITY)
+#ifdef VISUALIZE_ACTIVE_TURFS
+		if(SSair.vis_activity)
+			src.clear_atom_colour(TEMPORARY_COLOUR_PRIORITY)
+#endif
 
 	shared_this_tick = 0
 
@@ -343,41 +339,53 @@
 /datum/excited_group
 	var/list/turf_list = list()
 	var/rest_step = FALSE
+	var/active_count = 0
 
 /datum/excited_group/New()
 	SSair.excited_groups += src
 
 /datum/excited_group/proc/add_turf(turf/open/T)
+#ifdef ASSERT_ACTIVE_TURFS
+	ASSERT(T.excited_group == null)
+#endif
 	turf_list |= T
 	T.excited_group = src
+	if(T.excited)
+		active_count++
 	reset_cooldowns()
+
+/datum/excited_group/proc/validate()
+	var/safety = 0
+	for(var/t in turf_list)
+		var/turf/open/T = t
+		ASSERT(T.excited_group == src)
+		if(T.excited)
+			safety++
+	ASSERT(safety == active_count)
 
 /datum/excited_group/proc/merge_groups(datum/excited_group/E)
 	if(turf_list.len > E.turf_list.len)
 		SSair.excited_groups -= E
+		active_count += E.active_count
 		for(var/t in E.turf_list)
 			var/turf/open/T = t
 			T.excited_group = src
 			turf_list |= T
-
-		for(var/turf/open/T in turf_list)
-			ASSERT(T.excited_group == src)
-		for(var/turf/open/T in E.turf_list)
-			ASSERT(T.excited_group == src)
-
+#ifdef ASSERT_ACTIVE_TURFS
+		validate()
+#endif
 		E.turf_list.Cut()
 		reset_cooldowns()
 	else
 		SSair.excited_groups -= src
+		E.active_count += active_count
 		for(var/t in turf_list)
 			var/turf/open/T = t
 			T.excited_group = E
 			E.turf_list |= T
-
-		for(var/turf/open/T in E.turf_list)
-			ASSERT(T.excited_group == E)
-		for(var/turf/open/T in turf_list)
-			ASSERT(T.excited_group == E)
+#ifdef ASSERT_ACTIVE_TURFS
+		E.validate()
+#endif
 
 		turf_list.Cut()
 		E.reset_cooldowns()
@@ -417,8 +425,10 @@
 		var/turf/open/T = t
 		SSair.remove_from_active(T)
 		T.excited_group = null
+#ifdef VISUALIZE_ACTIVE_TURFS
 		if(SSair.vis_activity)
 			T.clear_atom_colour(TEMPORARY_COLOUR_PRIORITY)
+#endif
 	turf_list.Cut()
 	SSair.excited_groups -= src
 

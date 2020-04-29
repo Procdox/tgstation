@@ -225,15 +225,11 @@ SUBSYSTEM_DEF(air)
 		var/datum/excited_group/EG = currentrun[currentrun.len]
 		currentrun.len--
 
-		var/safety = TRUE
-		for(var/t in EG.turf_list)
-			var/turf/open/T = t
-			ASSERT(T.excited_group == EG)
-			if(T.excited)
-				safety = FALSE
-				break
+#ifdef ASSERT_ACTIVE_TURFS
+		EG.validate()
+#endif
 
-		if(safety)
+		if(EG.active_count == 0)
 			if(!EG.rest_step) //if there is no activity in the group, we break it down, then dismantle it if still stable
 				EG.self_breakdown()
 				EG.rest_step = TRUE
@@ -258,6 +254,8 @@ SUBSYSTEM_DEF(air)
 		if(T.excited)
 			active_turfs -= T
 			T.excited = 0
+			if(T.excited_group)
+				T.excited_group.active_count--
 			if(currentpart == SSAIR_ACTIVETURFS)
 				currentrun -= T
 
@@ -266,6 +264,8 @@ SUBSYSTEM_DEF(air)
 		if(blockchanges && T.excited_group)
 			T.excited_group.dismantle()
 		else if(!T.excited)
+			if(T.excited_group)
+				T.excited_group.active_count++
 			active_turfs |= T
 			T.excited = 1
 	else if(T.flags_1 & INITIALIZED_1)
@@ -325,24 +325,29 @@ SUBSYSTEM_DEF(air)
 
 		while (turfs_to_check.len)
 
+#ifdef ASSERT_ACTIVE_TURFS
 		for(var/turf/open/T in active_turfs)
 			if(T.excited_group)
 				ASSERT(T in T.excited_group.turf_list)
+#endif
 
 		var/ending_ats = active_turfs.len
 		for(var/thing in excited_groups)
 			var/datum/excited_group/EG = thing
 
-			for(var/turf/open/T in EG.turf_list)
-				ASSERT(T.excited_group == EG)
+#ifdef ASSERT_ACTIVE_TURFS
+			EG.validate()
+#endif
 
 			EG.self_breakdown(space_is_all_consuming = 1)
 			EG.dismantle()
 			CHECK_TICK
 
+#ifdef ASSERT_ACTIVE_TURFS
 		for(var/turf/open/T in active_turfs)
 			if(T.excited_group)
 				ASSERT(T in T.excited_group.turf_list)
+#endif
 
 		var/msg = "HEY! LISTEN! [DisplayTimeText(world.timeofday - timer)] were wasted processing [starting_ats] turf(s) (connected to [ending_ats] other turfs) with atmos differences at round start."
 		to_chat(world, "<span class='boldannounce'>[msg]</span>")
@@ -354,28 +359,32 @@ SUBSYSTEM_DEF(air)
 	if (blocks_air || !air)
 		return
 	if (!EG)
+		excited = 1
 		EG = new
 		EG.add_turf(src)
-		excited = 1
-
+		
 	for (var/turf/open/ET in atmos_adjacent_turfs)
 		if ( ET.blocks_air || !ET.air)
 			continue
 
 		var/ET_EG = ET.excited_group
+		if (!ET.excited)
+			ET.excited = 1
+			. |= ET
 		if (ET_EG)
 			if (ET_EG != EG)
 				EG.merge_groups(ET_EG)
 				EG = excited_group //merge_groups() may decide to replace our current EG
 		else
 			EG.add_turf(ET)
-		if (!ET.excited)
-			ET.excited = 1
-			. |= ET
 		
+		
+#ifdef ASSERT_ACTIVE_TURFS
 		ASSERT(EG)
 		ASSERT(src in EG.turf_list)
 		ASSERT(ET in EG.turf_list)
+		EG.validate()
+#endif
 
 /turf/open/space/resolve_active_graph()
 	return list()
