@@ -147,7 +147,7 @@
 /////////////////////////////SIMULATION///////////////////////////////////
 
 /turf/proc/process_cell(fire_count)
-	SSair.remove_from_active(src)
+	SSair.invalidate(src)
 
 /turf/open/process_cell(fire_count)
 	if(archived_cycle < fire_count) //archive self if not already done
@@ -166,6 +166,9 @@
 
 	var/datum/gas_mixture/our_air = air
 
+	if(our_excited_group)
+		ASSERT(src in our_excited_group.turf_list)
+
 	for(var/t in adjacent_turfs)
 		var/turf/open/enemy_tile = t
 
@@ -181,22 +184,45 @@
 		//cache for sanic speed
 		var/datum/excited_group/enemy_excited_group = enemy_tile.excited_group
 
+		if(our_excited_group)
+			ASSERT(src in our_excited_group.turf_list)
+
 		if(our_excited_group && enemy_excited_group)
 			if(our_excited_group != enemy_excited_group)
 				//combine groups (this also handles updating the excited_group var of all involved turfs)
 				our_excited_group.merge_groups(enemy_excited_group)
+
+				ASSERT(excited_group)
+				ASSERT(src in excited_group.turf_list)
+				ASSERT(enemy_tile in excited_group.turf_list)
+
 				our_excited_group = excited_group //update our cache
+
+				ASSERT(our_excited_group)
+				ASSERT(src in our_excited_group.turf_list)
+				ASSERT(enemy_tile in our_excited_group.turf_list)
 			should_share_air = TRUE
+
+			
 
 		else if(our_air.compare(enemy_air))
 			if(!enemy_tile.excited)
-				SSair.add_to_active(enemy_tile)
+				SSair.add_to_active(enemy_tile, 0)
 			var/datum/excited_group/EG = our_excited_group || enemy_excited_group || new
 			if(!our_excited_group)
 				EG.add_turf(src)
 			if(!enemy_excited_group)
 				EG.add_turf(enemy_tile)
+
+			ASSERT(excited_group)
+			ASSERT(src in excited_group.turf_list)
+			ASSERT(enemy_tile in excited_group.turf_list)
+				
 			our_excited_group = excited_group
+
+			ASSERT(our_excited_group)
+			ASSERT(src in our_excited_group.turf_list)
+			ASSERT(enemy_tile in our_excited_group.turf_list)
 			should_share_air = TRUE
 
 		//air sharing
@@ -209,11 +235,8 @@
 					enemy_tile.consider_pressure_difference(src, -difference)
 
 			var/last_share = our_air.last_share;
-			if(last_share > MINIMUM_MOLES_DELTA_TO_MOVE) {
-				if(!enemy_tile.excited) //re excite this turf if it came to rest in a group
-					enemy_tile.excited = TRUE
-					SSair.add_to_active(enemy_tile)
-					
+			if(last_share > MINIMUM_MOLES_DELTA_TO_MOVE)
+				SSair.add_to_active(enemy_tile, 0)
 				our_excited_group.reset_cooldowns();
 
 				if(last_share > MINIMUM_AIR_TO_SUSPEND)
@@ -222,8 +245,9 @@
 				else
 					enemy_tile.shared_this_tick = 1;
 					shared_this_tick = 1;
-			}
 
+		if(our_excited_group)
+			ASSERT(src in our_excited_group.turf_list)
 
 	/******************* GROUP HANDLING FINISH *********************************************************************/
 
@@ -235,7 +259,14 @@
 			if(!our_excited_group)
 				var/datum/excited_group/EG = new
 				EG.add_turf(src)
+
+				ASSERT(excited_group)
+				ASSERT(src in excited_group.turf_list)
+
 				our_excited_group = excited_group
+
+				ASSERT(our_excited_group)
+				ASSERT(src in our_excited_group.turf_list)
 			our_air.share(G, adjacent_turfs_length)
 			
 			var/last_share = our_air.last_share;
@@ -263,8 +294,7 @@
 				src.add_atom_colour("#00ff00", TEMPORARY_COLOUR_PRIORITY)
 			else
 				src.add_atom_colour("#0000ff", TEMPORARY_COLOUR_PRIORITY)
-				SSair.active_turfs -= src
-				excited = FALSE
+				SSair.remove_from_active(src)
 		
 
 	update_visuals()
@@ -272,7 +302,7 @@
 	//this was a dirty cleanup duct tape solution for turfs that didn't have their cooldown/excited unset correctly on group destruction
 	//now it just cleans up single turfs that didn't share at all (like if they were effected by a breathe, but not enough to create a difference)
 	if(!our_excited_group && !(our_air.temperature > MINIMUM_TEMPERATURE_START_SUPERCONDUCTION && consider_superconductivity(starting = TRUE)))
-		SSair.remove_from_active(src)
+		SSair.invalidate(src)
 		src.clear_atom_colour(TEMPORARY_COLOUR_PRIORITY)
 
 	shared_this_tick = 0
@@ -312,13 +342,13 @@
 
 /datum/excited_group
 	var/list/turf_list = list()
-	var/dismantle_cooldown = 0
+	var/rest_step = FALSE
 
 /datum/excited_group/New()
 	SSair.excited_groups += src
 
 /datum/excited_group/proc/add_turf(turf/open/T)
-	turf_list += T
+	turf_list |= T
 	T.excited_group = src
 	reset_cooldowns()
 
@@ -328,18 +358,32 @@
 		for(var/t in E.turf_list)
 			var/turf/open/T = t
 			T.excited_group = src
-			turf_list += T
+			turf_list |= T
+
+		for(var/turf/open/T in turf_list)
+			ASSERT(T.excited_group == src)
+		for(var/turf/open/T in E.turf_list)
+			ASSERT(T.excited_group == src)
+
+		E.turf_list.Cut()
 		reset_cooldowns()
 	else
 		SSair.excited_groups -= src
 		for(var/t in turf_list)
 			var/turf/open/T = t
 			T.excited_group = E
-			E.turf_list += T
+			E.turf_list |= T
+
+		for(var/turf/open/T in E.turf_list)
+			ASSERT(T.excited_group == E)
+		for(var/turf/open/T in turf_list)
+			ASSERT(T.excited_group == E)
+
+		turf_list.Cut()
 		E.reset_cooldowns()
 
 /datum/excited_group/proc/reset_cooldowns()
-	dismantle_cooldown = 0
+	rest_step = FALSE
 
 //argument is so world start can clear out any turf differences quickly.
 /datum/excited_group/proc/self_breakdown(space_is_all_consuming = FALSE)
@@ -349,12 +393,10 @@
 	var/list/A_gases = A.gases
 	var/list/turf_list = src.turf_list
 	var/turflen = turf_list.len
-	var/space_in_group = FALSE
 
 	for(var/t in turf_list)
 		var/turf/open/T = t
-		if (space_is_all_consuming && !space_in_group && istype(T.air, /datum/gas_mixture/immutable/space))
-			space_in_group = TRUE
+		if (space_is_all_consuming && istype(T.air, /datum/gas_mixture/immutable/space))
 			qdel(A)
 			A = new /datum/gas_mixture/immutable/space()
 			A_gases = A.gases //update the cache
@@ -368,13 +410,13 @@
 		var/turf/open/T = t
 		T.air.copy_from(A)
 		T.update_visuals()
+		SSair.add_to_active(T, 0)
 
 /datum/excited_group/proc/dismantle()
 	for(var/t in turf_list)
 		var/turf/open/T = t
-		T.excited = FALSE
+		SSair.remove_from_active(T)
 		T.excited_group = null
-		SSair.active_turfs -= T
 		if(SSair.vis_activity)
 			T.clear_atom_colour(TEMPORARY_COLOUR_PRIORITY)
 	turf_list.Cut()

@@ -224,29 +224,50 @@ SUBSYSTEM_DEF(air)
 	while(currentrun.len)
 		var/datum/excited_group/EG = currentrun[currentrun.len]
 		currentrun.len--
-		EG.dismantle_cooldown++
-		if(EG.dismantle_cooldown >= EXCITED_GROUP_DISMANTLE_CYCLES)
-			EG.dismantle()
+
+		var/safety = TRUE
+		for(var/t in EG.turf_list)
+			var/turf/open/T = t
+			ASSERT(T.excited_group == EG)
+			if(T.excited)
+				safety = FALSE
+				break
+
+		if(safety)
+			if(!EG.rest_step) //if there is no activity in the group, we break it down, then dismantle it if still stable
+				EG.self_breakdown()
+				EG.rest_step = TRUE
+			else
+				EG.dismantle()
 		if (MC_TICK_CHECK)
 			return
 
 
-/datum/controller/subsystem/air/proc/remove_from_active(turf/open/T)
-	active_turfs -= T
-	if(currentpart == SSAIR_ACTIVETURFS)
-		currentrun -= T
+/datum/controller/subsystem/air/proc/invalidate(turf/open/T)
 	if(istype(T))
-		T.excited = 0
 		if(T.excited_group)
 			T.excited_group.dismantle()
+		else if(T.excited)
+			active_turfs -= T
+			T.excited = 0
+			if(currentpart == SSAIR_ACTIVETURFS)
+				currentrun -= T
+
+/datum/controller/subsystem/air/proc/remove_from_active(turf/open/T)
+	if(istype(T))
+		if(T.excited)
+			active_turfs -= T
+			T.excited = 0
+			if(currentpart == SSAIR_ACTIVETURFS)
+				currentrun -= T
 
 /datum/controller/subsystem/air/proc/add_to_active(turf/open/T, blockchanges = 1)
 	if(istype(T) && T.air)
-		T.excited = 1
-		active_turfs |= T
-		//remove currentrun addition, which had potential to run huge numbers of atmo steps in a single run, which didn't make sense from a performance or behavior view
 		if(blockchanges && T.excited_group)
 			T.excited_group.dismantle()
+		else if(!T.excited)
+			active_turfs |= T
+			T.excited = 1
 	else if(T.flags_1 & INITIALIZED_1)
 		for(var/turf/S in T.atmos_adjacent_turfs)
 			add_to_active(S)
@@ -289,26 +310,39 @@ SUBSYSTEM_DEF(air)
 		var/timer = world.timeofday
 		log_mapping("There are [starting_ats] active turfs at roundstart caused by a difference of the air between the adjacent turfs. You can see its coordinates using \"Mapping -> Show roundstart AT list\" verb (debug verbs required).")
 		for(var/turf/T in active_turfs)
-			GLOB.active_turfs_startlist += T
+			GLOB.active_turfs_startlist |= T
 
 		//now lets clear out these active turfs
 		var/list/turfs_to_check = active_turfs.Copy()
 		do
 			var/list/new_turfs_to_check = list()
 			for(var/turf/open/T in turfs_to_check)
-				new_turfs_to_check += T.resolve_active_graph()
+				new_turfs_to_check |= T.resolve_active_graph()
 			CHECK_TICK
 
-			active_turfs += new_turfs_to_check
+			active_turfs |= new_turfs_to_check
 			turfs_to_check = new_turfs_to_check
 
 		while (turfs_to_check.len)
+
+		for(var/turf/open/T in active_turfs)
+			if(T.excited_group)
+				ASSERT(T in T.excited_group.turf_list)
+
 		var/ending_ats = active_turfs.len
 		for(var/thing in excited_groups)
 			var/datum/excited_group/EG = thing
+
+			for(var/turf/open/T in EG.turf_list)
+				ASSERT(T.excited_group == EG)
+
 			EG.self_breakdown(space_is_all_consuming = 1)
 			EG.dismantle()
 			CHECK_TICK
+
+		for(var/turf/open/T in active_turfs)
+			if(T.excited_group)
+				ASSERT(T in T.excited_group.turf_list)
 
 		var/msg = "HEY! LISTEN! [DisplayTimeText(world.timeofday - timer)] were wasted processing [starting_ats] turf(s) (connected to [ending_ats] other turfs) with atmos differences at round start."
 		to_chat(world, "<span class='boldannounce'>[msg]</span>")
@@ -322,6 +356,7 @@ SUBSYSTEM_DEF(air)
 	if (!EG)
 		EG = new
 		EG.add_turf(src)
+		excited = 1
 
 	for (var/turf/open/ET in atmos_adjacent_turfs)
 		if ( ET.blocks_air || !ET.air)
@@ -336,7 +371,12 @@ SUBSYSTEM_DEF(air)
 			EG.add_turf(ET)
 		if (!ET.excited)
 			ET.excited = 1
-			. += ET
+			. |= ET
+		
+		ASSERT(EG)
+		ASSERT(src in EG.turf_list)
+		ASSERT(ET in EG.turf_list)
+
 /turf/open/space/resolve_active_graph()
 	return list()
 
