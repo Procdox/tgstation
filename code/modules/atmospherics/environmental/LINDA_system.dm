@@ -53,8 +53,10 @@
 		if(!(blocks_air || T.blocks_air) && ((direction & (UP|DOWN))? (canvpass && CANVERTICALATMOSPASS(T, src)) : (canpass && CANATMOSPASS(T, src))) )
 			LAZYINITLIST(atmos_adjacent_turfs)
 			LAZYINITLIST(T.atmos_adjacent_turfs)
-			atmos_adjacent_turfs[T] = TRUE
-			T.atmos_adjacent_turfs[src] = TRUE
+			var/list/d = new
+			if(!atmos_adjacent_turfs[T] || !T.atmos_adjacent_turfs[src])
+				atmos_adjacent_turfs[T] = d
+				T.atmos_adjacent_turfs[src] = d
 		else
 			if (atmos_adjacent_turfs)
 				atmos_adjacent_turfs -= T

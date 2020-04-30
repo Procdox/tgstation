@@ -167,7 +167,7 @@
 		return
 
 	if(location.excited_group)
-		location.excited_group.reset_cooldowns()
+		location.excited_group.rest_step = FALSE
 
 	if((temperature < FIRE_MINIMUM_TEMPERATURE_TO_EXIST) || (volume <= 1))
 		qdel(src)

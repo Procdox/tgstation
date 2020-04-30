@@ -121,7 +121,7 @@
 		for(var/A in B.contents)
 			qdel(A)
 		return
-	SSair.invalidate(src)
+	SSair.remove_from_active(src)
 	visibilityChanged()
 	QDEL_LIST(blueprint_data)
 	flags_1 &= ~INITIALIZED_1

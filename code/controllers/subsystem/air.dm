@@ -230,53 +230,46 @@ SUBSYSTEM_DEF(air)
 #endif
 
 		if(EG.active_count == 0)
-			if(!EG.rest_step) //if there is no activity in the group, we break it down, then dismantle it if still stable
+			if(!EG.rest_step) //if there is no activity in the group, we break it down, then decay it if still stable
 				EG.self_breakdown()
 				EG.rest_step = TRUE
 			else
-				EG.dismantle()
+				EG.decay()
+		else
+			EG.rest_step = FALSE
+
 		if (MC_TICK_CHECK)
 			return
 
 
-/datum/controller/subsystem/air/proc/invalidate(turf/open/T)
-	if(istype(T))
-		if(T.excited_group)
-			T.excited_group.dismantle()
-		else if(T.excited)
-			active_turfs -= T
-			T.excited = 0
-			if(currentpart == SSAIR_ACTIVETURFS)
-				currentrun -= T
-
 /datum/controller/subsystem/air/proc/remove_from_active(turf/open/T)
 	if(istype(T))
-		if(T.excited)
+		if(T.excited_group)
+			T.excited_group.decay()
+		else if(T.atmo_state)
 			active_turfs -= T
-			T.excited = 0
-			if(T.excited_group)
-				T.excited_group.active_count--
+			T.atmo_state = ATMO_STATE_INACTIVE
 			if(currentpart == SSAIR_ACTIVETURFS)
 				currentrun -= T
 
 /datum/controller/subsystem/air/proc/add_to_active(turf/open/T, blockchanges = 1)
-	if(istype(T) && T.air)
-		if(blockchanges && T.excited_group)
-			T.excited_group.dismantle()
-		else if(!T.excited)
+	if(istype(T) && !T.blocks_air)
+		if(T.flags_1 & INITIALIZED_1)
 			if(T.excited_group)
-				T.excited_group.active_count++
-			active_turfs |= T
-			T.excited = 1
-	else if(T.flags_1 & INITIALIZED_1)
+				T.excited_group.interupt()
+			else
+				T.atmo_state = ATMO_STATE_ACTIVE
+				T.stability_counter = 0
+				T.rest_counter = 0
+				active_turfs |= T
+		else if(map_loading)
+			if(queued_for_activation)
+				queued_for_activation[T] = TRUE
+		else
+			T.requires_activation = TRUE
+	else
 		for(var/turf/S in T.atmos_adjacent_turfs)
 			add_to_active(S)
-	else if(map_loading)
-		if(queued_for_activation)
-			queued_for_activation[T] = T
-		return
-	else
-		T.requires_activation = TRUE
 
 /datum/controller/subsystem/air/StartLoadingMap()
 	LAZYINITLIST(queued_for_activation)
@@ -340,7 +333,7 @@ SUBSYSTEM_DEF(air)
 #endif
 
 			EG.self_breakdown(space_is_all_consuming = 1)
-			EG.dismantle()
+			EG.decay()
 			CHECK_TICK
 
 #ifdef ASSERT_ACTIVE_TURFS
@@ -359,7 +352,7 @@ SUBSYSTEM_DEF(air)
 	if (blocks_air || !air)
 		return
 	if (!EG)
-		excited = 1
+		atmo_state = ATMO_STATE_ACTIVE
 		EG = new
 		EG.add_turf(src)
 		
@@ -368,8 +361,8 @@ SUBSYSTEM_DEF(air)
 			continue
 
 		var/ET_EG = ET.excited_group
-		if (!ET.excited)
-			ET.excited = 1
+		if (ET.atmo_state == ATMO_STATE_INACTIVE)
+			ET.atmo_state = ATMO_STATE_ACTIVE
 			. |= ET
 		if (ET_EG)
 			if (ET_EG != EG)

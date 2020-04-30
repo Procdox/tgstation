@@ -1,3 +1,8 @@
+#define MINIMUM_HEAT_CAPACITY	0.0003
+#define MINIMUM_MOLE_COUNT		0.01
+#define MOLAR_ACCURACY  1E-7
+#define QUANTIZE(variable) (round((variable), (MOLAR_ACCURACY)))
+
 /turf
 	//used for temperature calculations
 	var/thermal_conductivity = 0.05
@@ -25,12 +30,13 @@
 	var/pressure_direction = 0
 
 	var/datum/excited_group/excited_group
-	var/excited = FALSE
+	var/atmo_state = ATMO_STATE_INACTIVE
 	var/datum/gas_mixture/turf/air
 
 	var/obj/effect/hotspot/active_hotspot
 	var/shared_this_tick = 0
-	var/cooldown = 0
+	var/stability_counter = 0
+	var/rest_counter = 0
 	var/planetary_atmos = FALSE //air will revert to initial_gas_mix over time
 
 	var/list/atmos_overlay_types //gas IDs of current active gas overlays
@@ -147,158 +153,339 @@
 /////////////////////////////SIMULATION///////////////////////////////////
 
 /turf/proc/process_cell(fire_count)
-	SSair.invalidate(src)
+	SSair.remove_from_active(src)
 
 /turf/open/process_cell(fire_count)
-	if(archived_cycle < fire_count) //archive self if not already done
-		archive()
+	ASSERT(atmo_state == ATMO_STATE_ACTIVE)
 
+	if(fire_count > archived_cycle) //archive self if not already done
+		archive()
 	current_cycle = fire_count
 
-	//cache for sanic speed
 	var/list/adjacent_turfs = atmos_adjacent_turfs
-	var/datum/excited_group/our_excited_group = excited_group
-	var/adjacent_turfs_length = LAZYLEN(adjacent_turfs)
-
+	var/datum/excited_group/local_group = excited_group
+	
+	var/local_k = LAZYLEN(adjacent_turfs) + 1
 	var/planet_atmos = planetary_atmos
 	if (planet_atmos)
-		adjacent_turfs_length++
+		local_k++
 
-	var/datum/gas_mixture/our_air = air
+	var/datum/gas_mixture/local_air = air
+	var/list/local_mix = local_air.gases
 
-#ifdef ASSERT_ACTIVE_TURFS
-	if(our_excited_group)
-		ASSERT(src in our_excited_group.turf_list)
-		our_excited_group.validate()
-#endif
+	var/old_self_heat_capacity = local_air.heat_capacity()
 
+	//for(var/id in total_delta)
+	//	total_delta[id][ARCHIVE] = total_delta[id][MOLES]
+	//	total_delta[id][MOLES] = 0
+
+	//var/list/total_delta = new
+	
 	for(var/t in adjacent_turfs)
 		var/turf/open/enemy_tile = t
 
-		if(fire_count <= enemy_tile.current_cycle)
-			continue
-		enemy_tile.archive()
-
-	/******************* GROUP HANDLING START *****************************************************************/
-
-		var/should_share_air = FALSE
+		var/list/pair_delta = adjacent_turfs[t]
 		var/datum/gas_mixture/enemy_air = enemy_tile.air
 
-		//cache for sanic speed
-		var/datum/excited_group/enemy_excited_group = enemy_tile.excited_group
+		//@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+		//  sharing adjacent
 
-		if(our_excited_group && enemy_excited_group)
-			if(our_excited_group != enemy_excited_group)
-				//combine groups (this also handles updating the excited_group var of all involved turfs)
-				our_excited_group.merge_groups(enemy_excited_group)
-				our_excited_group = excited_group //update our cache
-#ifdef ASSERT_ACTIVE_TURFS
-				ASSERT(our_excited_group)
-				ASSERT(src in our_excited_group.turf_list)
-				ASSERT(enemy_tile in our_excited_group.turf_list)
-				our_excited_group.validate()
-#endif
-			should_share_air = TRUE
+		//short form for second-ordered pair element
+		if(fire_count <= enemy_tile.current_cycle)
 
+			var/heat_capacity_self_to_sharer = 0
+			var/heat_capacity_sharer_to_self = 0
+
+			for(var/id in pair_delta)
+				//if(!total_delta[id]) total_delta[id] = 0
+
+				var/local_gas = local_mix[id]
+				var/delta = pair_delta[id][MOLES]
+
+				ASSERT(delta)
+
+				var/gas_heat_capacity = delta * local_gas[GAS_META][META_GAS_SPECIFIC_HEAT]
+				if(delta < 0)
+					heat_capacity_self_to_sharer -= gas_heat_capacity
+				else
+					heat_capacity_sharer_to_self += gas_heat_capacity
+
+				local_gas[MOLES] += delta
+				//total_delta[id] += delta
+
+			var/new_self_heat_capacity = old_self_heat_capacity + heat_capacity_sharer_to_self - heat_capacity_self_to_sharer
+			temperature = (old_self_heat_capacity*temperature - heat_capacity_self_to_sharer*temperature_archived + heat_capacity_sharer_to_self*enemy_air.temperature_archived)/new_self_heat_capacity
+
+			old_self_heat_capacity = new_self_heat_capacity
+
+			//skip grouping for second-ordered pair
+			continue
+
+		//long form for first-ordered pair element
+
+		var/list/enemy_mix = enemy_air.gases
+		var/enemy_k = enemy_tile.atmos_adjacent_turfs.len + (enemy_tile.planetary_atmos ? 2 : 1)
+		var/k = (enemy_k > local_k ? enemy_k : local_k)
+
+		if(fire_count > enemy_tile.archived_cycle)
+			enemy_tile.archive()
+
+		var/old_sharer_heat_capacity = enemy_air.heat_capacity()
+		var/heat_capacity_self_to_sharer = 0
+		var/heat_capacity_sharer_to_self = 0
+		
+		var/share = 0
+
+		for(var/id in pair_delta)
+			pair_delta[id][MOLES] = 0
+
+		for(var/id in (enemy_mix || local_mix))
+			if(!local_mix[id]) local_mix[id] = GLOB.gaslist_cache[id].Copy()
+			if(!enemy_mix[id]) enemy_mix[id] = GLOB.gaslist_cache[id].Copy()
+
+			var/local_gas = local_mix[id]
+			var/enemy_gas = enemy_mix[id]
+			var/delta = QUANTIZE(local_gas[ARCHIVE] - enemy_gas[ARCHIVE]) / k
+			
+			if(delta)
+				if(!pair_delta[id]) pair_delta[id] = GLOB.gaslist_cache[id].Copy()
+				//if(!total_delta[id]) total_delta[id] = 0
+				
+				var/gas_heat_capacity = delta * local_gas[GAS_META][META_GAS_SPECIFIC_HEAT]
+				if(delta > 0)
+					heat_capacity_self_to_sharer += gas_heat_capacity
+				else
+					heat_capacity_sharer_to_self -= gas_heat_capacity
+
+				local_gas[MOLES] -= delta
+				pair_delta[id][MOLES] = delta;
+				//total_delta[id] -= delta;
+				share += abs(delta)
+
+				if(enemy_tile.atmo_state == ATMO_STATE_INACTIVE || enemy_tile.atmo_state == ATMO_STATE_REST)
+					enemy_gas[MOLES] += delta
+
+			else
+				pair_delta -= id
+
+		var/pair_change = FALSE
+		for(var/id in pair_delta)
+			if(abs(pair_delta[id][ARCHIVE] - pair_delta[id][MOLES]) > MINIMUM_MOLES_DELTA_TO_MOVE)
+				pair_change = TRUE
+				pair_delta[id][ARCHIVE] = pair_delta[id][MOLES] //by only updating this on change, prevents cumulative drift
+			if(pair_delta[id][MOLES] == 0)
+				pair_delta -= id
+
+		var/new_self_heat_capacity = old_self_heat_capacity + heat_capacity_sharer_to_self - heat_capacity_self_to_sharer
+		var/new_sharer_heat_capacity = old_sharer_heat_capacity + heat_capacity_self_to_sharer - heat_capacity_sharer_to_self
+		if(new_self_heat_capacity > MINIMUM_HEAT_CAPACITY)
+			local_air.temperature = (old_self_heat_capacity*temperature - heat_capacity_self_to_sharer*local_air.temperature_archived + heat_capacity_sharer_to_self*enemy_air.temperature_archived)/new_self_heat_capacity
+		
+		old_self_heat_capacity = new_self_heat_capacity
+
+		if(enemy_tile.atmo_state == ATMO_STATE_INACTIVE || enemy_tile.atmo_state == ATMO_STATE_REST)
+			if(new_sharer_heat_capacity > MINIMUM_HEAT_CAPACITY)
+				enemy_air.temperature = (old_sharer_heat_capacity*enemy_air.temperature-heat_capacity_sharer_to_self*enemy_air.temperature_archived + heat_capacity_self_to_sharer*local_air.temperature_archived)/new_sharer_heat_capacity
+
+		if(pair_change)
+			enemy_tile.stability_counter = 0
+			stability_counter = 0
+			if(enemy_tile.atmo_state == ATMO_STATE_STABLE)
+				enemy_tile.atmo_state = ATMO_STATE_ACTIVE
+				enemy_tile.rest_counter = 0
+				SSair.active_turfs |= enemy_tile
+				ASSERT(SSair.currentpart == SSAIR_ACTIVETURFS) //shit needs to be taken care of THIS run, or we'll gain/lose significant atmo
+				SSair.currentrun |= enemy_tile 
 			
 
-		else if(our_air.compare(enemy_air))
-			if(!enemy_tile.excited)
-				SSair.add_to_active(enemy_tile, 0)
-			var/datum/excited_group/EG = our_excited_group || enemy_excited_group || new
-			if(!our_excited_group)
+		//@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+		//  grouping
+
+		var/datum/excited_group/enemy_group = enemy_tile.excited_group
+		if(local_group && enemy_group)
+			if(local_group != enemy_group)
+				//combine groups (this also handles updating the excited_group var of all involved turfs)
+				local_group.merge_groups(enemy_group)
+				local_group = excited_group //update our cache
+#ifdef ASSERT_ACTIVE_TURFS
+				ASSERT(local_group)
+				ASSERT(src in local_group.turf_list)
+				ASSERT(enemy_tile in local_group.turf_list)
+				local_group.validate()
+#endif
+
+		else if(share > MINIMUM_MOLES_DELTA_TO_MOVE)
+			if(enemy_tile.atmo_state != ATMO_STATE_ACTIVE)
+				enemy_tile.atmo_state = ATMO_STATE_ACTIVE
+				enemy_tile.stability_counter = 0
+				enemy_tile.rest_counter = 0
+				SSair.active_turfs |= enemy_tile
+				if(enemy_tile.atmo_state == ATMO_STATE_STABLE)
+					ASSERT(SSair.currentpart == SSAIR_ACTIVETURFS) //shit needs to be taken care of THIS run, or we'll gain/lose significant atmo
+					SSair.currentrun |= enemy_tile
+				else if(enemy_group)
+					enemy_group.active_count++
+
+
+			var/datum/excited_group/EG = local_group || enemy_group || new
+			if(!local_group)
 				EG.add_turf(src)
-			if(!enemy_excited_group)
+			if(!enemy_group)
 				EG.add_turf(enemy_tile)
-			our_excited_group = excited_group
+			local_group = excited_group
 #ifdef ASSERT_ACTIVE_TURFS
-			ASSERT(our_excited_group)
-			ASSERT(src in our_excited_group.turf_list)
-			ASSERT(enemy_tile in our_excited_group.turf_list)
-			our_excited_group.validate()
+			ASSERT(local_group)
+			ASSERT(src in local_group.turf_list)
+			ASSERT(enemy_tile in local_group.turf_list)
+			local_group.validate()
 #endif
 
-		//air sharing
-		if(should_share_air)
-			var/difference = our_air.share(enemy_air, adjacent_turfs_length)
-			if(difference)
-				if(difference > 0)
-					consider_pressure_difference(enemy_tile, difference)
-				else
-					enemy_tile.consider_pressure_difference(src, -difference)
+		if(share > MINIMUM_AIR_TO_SUSPEND)
+			if(enemy_tile.shared_this_tick < 2)
+				enemy_tile.shared_this_tick = 2;
+			if(shared_this_tick < 2)
+				shared_this_tick = 2;
+		else if(share > MINIMUM_MOLES_DELTA_TO_MOVE)
+			if(enemy_tile.shared_this_tick < 1)
+				enemy_tile.shared_this_tick = 1;
+			if(shared_this_tick < 1)
+				shared_this_tick = 1;
 
-			var/last_share = our_air.last_share;
-			if(last_share > MINIMUM_MOLES_DELTA_TO_MOVE)
-				SSair.add_to_active(enemy_tile, 0)
-				our_excited_group.reset_cooldowns();
-
-				if(last_share > MINIMUM_AIR_TO_SUSPEND)
-					enemy_tile.shared_this_tick = 2;
-					shared_this_tick = 2;
-				else
-					enemy_tile.shared_this_tick = 1;
-					shared_this_tick = 1;
+		/*
+		if(difference)
+			if(difference > 0)
+				consider_pressure_difference(enemy_tile, difference)
+			else
+				enemy_tile.consider_pressure_difference(src, -difference)
+		*/
 
 #ifdef ASSERT_ACTIVE_TURFS
-		if(our_excited_group)
-			ASSERT(src in our_excited_group.turf_list)
-			our_excited_group.validate()
+		if(local_group)
+			ASSERT(src in local_group.turf_list)
+			local_group.validate()
 #endif
-	/******************* GROUP HANDLING FINISH *********************************************************************/
 
-	if (planet_atmos) //share our air with the "atmosphere" "above" the turf
-		var/datum/gas_mixture/G = new
-		G.copy_from_turf(src)
-		G.archive()
-		if(our_air.compare(G))
-			if(!our_excited_group)
+	//@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+	//  sharing atmosphere
+
+	if (planet_atmos)
+		var/datum/gas_mixture/enemy_air = new
+		enemy_air.copy_from_turf(src)
+		enemy_air.archive()
+
+		var/list/enemy_mix = enemy_air.gases
+		var/heat_capacity_sharer_to_self = 0
+		var/heat_capacity_self_to_sharer = 0
+
+		var/share = 0
+
+		for(var/id in (enemy_mix || local_mix))
+			if(!local_mix[id]) local_mix[id] = GLOB.gaslist_cache[id].Copy()
+			if(!enemy_mix[id]) enemy_mix[id] = GLOB.gaslist_cache[id].Copy()
+
+			var/local_gas = local_mix[id]
+			var/enemy_gas = enemy_mix[id]
+			var/delta = QUANTIZE(local_gas[ARCHIVE] - enemy_gas[ARCHIVE]) / local_k
+			
+			if(delta)
+				//if(!total_delta[id]) total_delta[id] = 0
+				
+				var/gas_heat_capacity = delta * local_gas[GAS_META][META_GAS_SPECIFIC_HEAT]
+				if(delta > 0)
+					heat_capacity_self_to_sharer += gas_heat_capacity
+				else
+					heat_capacity_sharer_to_self -= gas_heat_capacity
+
+				local_gas[MOLES] -= delta
+				//total_delta[id] -= delta;
+				share += abs(delta)
+
+		var/new_self_heat_capacity = old_self_heat_capacity + heat_capacity_sharer_to_self - heat_capacity_self_to_sharer
+		temperature = (old_self_heat_capacity*temperature - heat_capacity_self_to_sharer*temperature_archived + heat_capacity_sharer_to_self*enemy_air.temperature_archived)/new_self_heat_capacity
+
+		old_self_heat_capacity = new_self_heat_capacity
+
+		//@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+		//  grouping atmosphere
+
+		if(share > MINIMUM_MOLES_DELTA_TO_MOVE)
+			if(!local_group)
 				var/datum/excited_group/EG = new
 				EG.add_turf(src)
-				our_excited_group = excited_group
-			our_air.share(G, adjacent_turfs_length)
-			
-			var/last_share = our_air.last_share;
-			if(last_share > MINIMUM_AIR_TO_SUSPEND){
-				our_excited_group.reset_cooldowns();
+				local_group = excited_group
+
+		if(share > MINIMUM_AIR_TO_SUSPEND)
+			if(shared_this_tick < 2)
 				shared_this_tick = 2;
-			} 
-			else if(last_share > MINIMUM_MOLES_DELTA_TO_MOVE) {
-				our_excited_group.reset_cooldowns();
+		else if(share > MINIMUM_MOLES_DELTA_TO_MOVE)
+			if(shared_this_tick < 1)
 				shared_this_tick = 1;
-			}
+	
+	//are we increasing significantly
+	var/change = FALSE
+	for(var/id in local_mix)
+		if(abs(local_mix[id][MOLES] - local_mix[id][ARCHIVE]) > 0)
+			change = TRUE
+			break
 
-	our_air.react(src)
+	var/reacted = local_air.react(src) //TODO stable reaction fixing
+	if(reacted || change) 
+		stability_counter = 0
 
+	stability_counter++
 
-	if(shared_this_tick > 0)
-		cooldown = 0
-	else if(cooldown++ >= 10)
-		SSair.remove_from_active(src)
+	if(reacted || shared_this_tick)
+		rest_counter = 0
+	else
+		rest_counter++
+
+	if(rest_counter >= 5)
+		atmo_state = ATMO_STATE_REST
+		local_group.active_count--
+		SSair.active_turfs -= src
+		if(SSair.currentpart == SSAIR_ACTIVETURFS)
+			SSair.currentrun -= src
+#ifdef VISUALIZE_ACTIVE_TURFS
+		if(SSair.vis_activity)
+			src.add_atom_colour("#006600", TEMPORARY_COLOUR_PRIORITY)
+#endif
+
+	else if(stability_counter >= 7)
+		atmo_state = ATMO_STATE_STABLE
+		SSair.active_turfs -= src
+		if(SSair.currentpart == SSAIR_ACTIVETURFS)
+			SSair.currentrun -= src
 	
 #ifdef VISUALIZE_ACTIVE_TURFS
-	if(SSair.vis_activity)
-		if(shared_this_tick > 0)
+		if(SSair.vis_activity)
 			if(shared_this_tick == 2)
-				src.add_atom_colour("#ff0000", TEMPORARY_COLOUR_PRIORITY)
+				src.add_atom_colour("#ff00ff", TEMPORARY_COLOUR_PRIORITY)
+			else if(shared_this_tick == 1)
+				src.add_atom_colour("#9900ff", TEMPORARY_COLOUR_PRIORITY)
 			else
-				src.add_atom_colour("#ffff00", TEMPORARY_COLOUR_PRIORITY)
-		else
-			if(cooldown < 10)
-				src.add_atom_colour("#00ff00", TEMPORARY_COLOUR_PRIORITY)
-			else
-				src.add_atom_colour("#0000ff", TEMPORARY_COLOUR_PRIORITY)
+				src.add_atom_colour("#000066", TEMPORARY_COLOUR_PRIORITY)
 #endif
-		
+	else
+#ifdef VISUALIZE_ACTIVE_TURFS
+		if(SSair.vis_activity)
+			if(shared_this_tick == 2)
+				src.add_atom_colour("#ffff00", TEMPORARY_COLOUR_PRIORITY)
+			else if(shared_this_tick == 1)
+				src.add_atom_colour("#ff9900", TEMPORARY_COLOUR_PRIORITY)
+			else
+				src.add_atom_colour("#660000", TEMPORARY_COLOUR_PRIORITY)
+#endif
 
 	update_visuals()
 
 	//this was a dirty cleanup duct tape solution for turfs that didn't have their cooldown/excited unset correctly on group destruction
 	//now it just cleans up single turfs that didn't share at all (like if they were effected by a breathe, but not enough to create a difference)
-	if(!our_excited_group && !(our_air.temperature > MINIMUM_TEMPERATURE_START_SUPERCONDUCTION && consider_superconductivity(starting = TRUE)))
-		SSair.invalidate(src)
+	if(!local_group && !(local_air.temperature > MINIMUM_TEMPERATURE_START_SUPERCONDUCTION && consider_superconductivity(starting = TRUE)))
+		SSair.remove_from_active(src)
+
 #ifdef VISUALIZE_ACTIVE_TURFS
 		if(SSair.vis_activity)
-			src.clear_atom_colour(TEMPORARY_COLOUR_PRIORITY)
+			src.add_atom_colour("#000000", TEMPORARY_COLOUR_PRIORITY)
 #endif
 
 	shared_this_tick = 0
@@ -347,19 +534,20 @@
 /datum/excited_group/proc/add_turf(turf/open/T)
 #ifdef ASSERT_ACTIVE_TURFS
 	ASSERT(T.excited_group == null)
+	ASSERT(T.atmo_state == ATMO_STATE_ACTIVE)
 #endif
 	turf_list |= T
 	T.excited_group = src
-	if(T.excited)
-		active_count++
-	reset_cooldowns()
+	active_count++
+	rest_step = FALSE
 
 /datum/excited_group/proc/validate()
 	var/safety = 0
 	for(var/t in turf_list)
 		var/turf/open/T = t
 		ASSERT(T.excited_group == src)
-		if(T.excited)
+		ASSERT(T.atmo_state != ATMO_STATE_INACTIVE)
+		if(T.atmo_state == ATMO_STATE_ACTIVE || T.atmo_state == ATMO_STATE_STABLE)
 			safety++
 	ASSERT(safety == active_count)
 
@@ -375,7 +563,7 @@
 		validate()
 #endif
 		E.turf_list.Cut()
-		reset_cooldowns()
+		rest_step = FALSE
 	else
 		SSair.excited_groups -= src
 		E.active_count += active_count
@@ -386,12 +574,8 @@
 #ifdef ASSERT_ACTIVE_TURFS
 		E.validate()
 #endif
-
 		turf_list.Cut()
-		E.reset_cooldowns()
-
-/datum/excited_group/proc/reset_cooldowns()
-	rest_step = FALSE
+		E.rest_step = FALSE
 
 //argument is so world start can clear out any turf differences quickly.
 /datum/excited_group/proc/self_breakdown(space_is_all_consuming = FALSE)
@@ -418,17 +602,41 @@
 		var/turf/open/T = t
 		T.air.copy_from(A)
 		T.update_visuals()
-		SSair.add_to_active(T, 0)
+		T.atmo_state = ATMO_STATE_ACTIVE
+		T.stability_counter = 0
+		T.rest_counter = 0
+		SSair.active_turfs |= T
+	active_count += turf_list.len
 
-/datum/excited_group/proc/dismantle()
+//called if the group should be destroyed and not continue running
+/datum/excited_group/proc/decay()
 	for(var/t in turf_list)
 		var/turf/open/T = t
-		SSair.remove_from_active(T)
 		T.excited_group = null
+		T.atmo_state = ATMO_STATE_INACTIVE
+		SSair.active_turfs -= T
+		if(SSair.currentpart == SSAIR_ACTIVETURFS)
+			SSair.currentrun -= T
 #ifdef VISUALIZE_ACTIVE_TURFS
 		if(SSair.vis_activity)
-			T.clear_atom_colour(TEMPORARY_COLOUR_PRIORITY)
+			T.add_atom_colour("#00aaff", TEMPORARY_COLOUR_PRIORITY)
 #endif
+	//we could lose atmo here due to unfinished shares
+	active_count = 0
+	turf_list.Cut()
+	SSair.excited_groups -= src
+
+//called if the group should be detroyed and recalculated
+/datum/excited_group/proc/interupt()
+	for(var/t in turf_list)
+		var/turf/open/T = t
+		T.excited_group = null
+		T.atmo_state = ATMO_STATE_ACTIVE
+		T.stability_counter = 0
+		T.rest_counter = 0
+		SSair.active_turfs |= T
+
+	active_count = 0
 	turf_list.Cut()
 	SSair.excited_groups -= src
 
@@ -463,7 +671,8 @@
 		T.air.temperature_share(air, WINDOW_HEAT_TRANSFER_COEFFICIENT)
 	else //Solid but neighbor is open
 		temperature_share_open_to_solid(other)
-	SSair.add_to_active(src, 0)
+	atmo_state = ATMO_STATE_ACTIVE
+	SSair.add_to_active(src)
 
 /turf/proc/super_conduct()
 	var/conductivity_directions = conductivity_directions()
