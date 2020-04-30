@@ -255,7 +255,7 @@ SUBSYSTEM_DEF(air)
 /datum/controller/subsystem/air/proc/add_to_active(turf/open/T, blockchanges = 1)
 	if(istype(T) && !T.blocks_air)
 		if(T.flags_1 & INITIALIZED_1)
-			if(T.excited_group)
+			if(T.excited_group && blockchanges)
 				T.excited_group.interupt()
 			else
 				T.atmo_state = ATMO_STATE_ACTIVE
@@ -269,6 +269,7 @@ SUBSYSTEM_DEF(air)
 			T.requires_activation = TRUE
 	else
 		for(var/turf/S in T.atmos_adjacent_turfs)
+			ASSERT(istype(S, /turf/open) && !S.blocks_air) //assertion fails => infinite loop, indicates a fault with adjacency setup (or an errant edit down the line)
 			add_to_active(S)
 
 /datum/controller/subsystem/air/StartLoadingMap()
