@@ -236,6 +236,7 @@ SUBSYSTEM_DEF(air)
 			else
 				EG.decay()
 		else
+			EG.fire()
 			EG.rest_step = FALSE
 
 		if (MC_TICK_CHECK)
@@ -246,11 +247,8 @@ SUBSYSTEM_DEF(air)
 	if(istype(T))
 		if(T.excited_group)
 			T.excited_group.decay()
-		else if(T.atmo_state)
-			active_turfs -= T
-			T.atmo_state = ATMO_STATE_INACTIVE
-			if(currentpart == SSAIR_ACTIVETURFS)
-				currentrun -= T
+		else
+			T.set_state_inactive()
 
 /datum/controller/subsystem/air/proc/add_to_active(turf/open/T, blockchanges = 1)
 	if(istype(T) && !T.blocks_air)
@@ -258,10 +256,7 @@ SUBSYSTEM_DEF(air)
 			if(T.excited_group && blockchanges)
 				T.excited_group.interupt()
 			else
-				T.atmo_state = ATMO_STATE_ACTIVE
-				T.stability_counter = 0
-				T.rest_counter = 0
-				active_turfs |= T
+				T.set_state_active()
 		else if(map_loading)
 			if(queued_for_activation)
 				queued_for_activation[T] = TRUE
@@ -308,13 +303,19 @@ SUBSYSTEM_DEF(air)
 
 		//now lets clear out these active turfs
 		var/list/turfs_to_check = active_turfs.Copy()
+		var/list/turfs_checked = list()
 		do
 			var/list/new_turfs_to_check = list()
 			for(var/turf/open/T in turfs_to_check)
 				new_turfs_to_check |= T.resolve_active_graph()
 			CHECK_TICK
 
-			active_turfs |= new_turfs_to_check
+			//<SAFETY DANCE>
+			turfs_checked |= turfs_to_check
+			var/list/dupes = turfs_checked & new_turfs_to_check
+			ASSERT(dupes.len == 0)
+			//</SAFETY DANCE>
+
 			turfs_to_check = new_turfs_to_check
 
 		while (turfs_to_check.len)
@@ -353,7 +354,7 @@ SUBSYSTEM_DEF(air)
 	if (blocks_air || !air)
 		return
 	if (!EG)
-		atmo_state = ATMO_STATE_ACTIVE
+		set_state_active()
 		EG = new
 		EG.add_turf(src)
 		
@@ -363,7 +364,7 @@ SUBSYSTEM_DEF(air)
 
 		var/ET_EG = ET.excited_group
 		if (ET.atmo_state == ATMO_STATE_INACTIVE)
-			ET.atmo_state = ATMO_STATE_ACTIVE
+			ET.set_state_active()
 			. |= ET
 		if (ET_EG)
 			if (ET_EG != EG)
@@ -377,7 +378,7 @@ SUBSYSTEM_DEF(air)
 		ASSERT(EG)
 		ASSERT(src in EG.turf_list)
 		ASSERT(ET in EG.turf_list)
-		EG.validate()
+		//EG.validate() DON'T something causes a huge massive connected region occasionally, and it takes an ETERNITY
 #endif
 
 /turf/open/space/resolve_active_graph()

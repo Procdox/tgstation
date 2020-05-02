@@ -134,11 +134,7 @@
 	baseturfs = /turf/open/indestructible/airblock
 
 /turf/open/Initalize_Atmos(times_fired)
-	atmo_state = ATMO_STATE_INACTIVE
-	shared_this_tick = 0
-	stability_counter = 0
-	rest_counter = 0
-	excited_group = null
+	set_state_inactive()
 	update_visuals()
 
 	current_cycle = times_fired
